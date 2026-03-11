@@ -4,7 +4,6 @@
 <meta charset="UTF-8" />
 <title>Super Mario Bros</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<script>window.onerror=function(m){if(m&&m.indexOf("__firefox__")!==-1)return true;}</script>
 <meta name="application-name" content="SugarCube" />
 <meta name="version" content="2.37.3" />
 <!--
@@ -141,6 +140,7 @@ html, body {
   top: 0; left: 0; right: 0; bottom: 0;
   overflow-y: scroll;
   overflow-x: hidden;
+  z-index: 1;
 }
 
 /* Text buffer — centered column of accumulating prose */
@@ -181,7 +181,13 @@ p.prose a {
 }
 p.prose a:hover {
   text-decoration: underline;
-}</style><script role="script" id="twine-user-script" type="text/twine-javascript">var lastFadeTime = 0;
+}</style><script role="script" id="twine-user-script" type="text/twine-javascript">/* Clear SugarCube's session state so browser refresh always starts fresh */
+if (typeof sessionStorage !== "undefined") { sessionStorage.clear(); }
+Config.saves.maxAutoSaves = 0;
+Config.saves.maxSlotSaves = 0;
+
+var lastFadeTime = 0;
+var historyStack = []; /* Each entry: { html: bufferHTML, scrollTop: scrollPos } */
 
 function inkyFadeIn($el) {
     var minimumTimeSeparation = 200;
@@ -221,12 +227,82 @@ function addDividerIfNeeded() {
     }
 }
 
+function saveSnapshot() {
+    var $buf = $("#text-buffer");
+    var $container = $("#scroll-container");
+    historyStack.push({
+        html: $buf.html(),
+        scrollTop: $container.scrollTop()
+    });
+    updateNav();
+}
+
+function restoreSnapshot() {
+    if (historyStack.length === 0) return;
+    var snap = historyStack.pop();
+    var $buf = $("#text-buffer");
+    var $container = $("#scroll-container");
+    $buf.html(snap.html);
+    /* Re-bind click handlers on restored choice links */
+    $buf.find("p.choice a").each(function() {
+        var $a = $(this);
+        var passageName = $a.attr("data-target");
+        $a.off("click").on("click", function(e) {
+            e.preventDefault();
+            saveSnapshot();
+            $buf.height($buf.height());
+            $buf.find("p.choice").remove();
+            addDividerIfNeeded();
+            $buf.height("auto");
+            Engine.play(passageName);
+        });
+    });
+    /* Re-bind inline links */
+    $buf.find("a.inline-link").each(function() {
+        var $a = $(this);
+        var passageName = $a.attr("data-target");
+        $a.off("click").on("click", function(e) {
+            e.preventDefault();
+            saveSnapshot();
+            $a.replaceWith($a.text());
+            $buf.height($buf.height());
+            $buf.find("p.choice").remove();
+            addDividerIfNeeded();
+            $buf.height("auto");
+            Engine.play(passageName);
+        });
+    });
+    $container.scrollTop(snap.scrollTop);
+    updateNav();
+}
+
+function doRestart() {
+    historyStack = [];
+    var $buf = $("#text-buffer");
+    $buf.empty();
+    lastFadeTime = 0;
+    updateNav();
+    Engine.play("Start");
+}
+
+function updateNav() {
+    var $back = $("#nav-back");
+    if ($back.length) {
+        if (historyStack.length > 0) {
+            $back.css({ opacity: 1, pointerEvents: "auto" });
+        } else {
+            $back.css({ opacity: 0.3, pointerEvents: "none" });
+        }
+    }
+}
+
 function handleChoice(passageName, linkText) {
     var $buf = $("#text-buffer");
     var $cp = $("<p class='choice'></p>");
-    var $a = $("<a href='#'></a>").text(linkText);
+    var $a = $("<a href='#'></a>").text(linkText).attr("data-target", passageName);
     $a.on("click", function(e) {
         e.preventDefault();
+        saveSnapshot();
         $buf.height($buf.height());
         $buf.find("p.choice").remove();
         addDividerIfNeeded();
@@ -241,8 +317,10 @@ function handleChoice(passageName, linkText) {
 function handleInlineLink($a, passageName) {
     var $buf = $("#text-buffer");
     $a.attr("href", "#").removeAttr("data-passage");
+    $a.addClass("inline-link").attr("data-target", passageName);
     $a.on("click", function(e) {
         e.preventDefault();
+        saveSnapshot();
         $a.replaceWith($a.text());
         $buf.height($buf.height());
         $buf.find("p.choice").remove();
@@ -283,6 +361,45 @@ function processBlock($p) {
 $(document).one(":passagerender", function() {
     if ($("#scroll-container").length === 0) {
         $("body").append("<div id='scroll-container'><div id='text-buffer'></div></div>");
+    }
+    if (!document.getElementById("story-nav")) {
+        var nav = document.createElement("div");
+        nav.id = "story-nav";
+        nav.setAttribute("style",
+            "position:sticky; top:0; z-index:10;" +
+            "display:flex; justify-content:space-between;" +
+            "padding:14px 20px 24px;" +
+            "background:linear-gradient(to bottom, #1A1A1A 50%, transparent);" +
+            "font-family:'Atkinson Hyperlegible Next',sans-serif;"
+        );
+        var back = document.createElement("a");
+        back.id = "nav-back";
+        back.href = "#";
+        back.textContent = "\u2190 Back";
+        back.setAttribute("style",
+            "pointer-events:auto; color:#555; text-decoration:none;" +
+            "font-size:14px; font-weight:400; letter-spacing:0.05em;" +
+            "text-transform:uppercase; cursor:pointer;"
+        );
+        var restart = document.createElement("a");
+        restart.id = "nav-restart";
+        restart.href = "#";
+        restart.textContent = "Restart";
+        restart.setAttribute("style",
+            "pointer-events:auto; color:#555; text-decoration:none;" +
+            "font-size:14px; font-weight:400; letter-spacing:0.05em;" +
+            "text-transform:uppercase; cursor:pointer;"
+        );
+        back.addEventListener("mouseover", function() { this.style.color = "#06C2FE"; });
+        back.addEventListener("mouseout", function() { this.style.color = "#555"; });
+        restart.addEventListener("mouseover", function() { this.style.color = "#06C2FE"; });
+        restart.addEventListener("mouseout", function() { this.style.color = "#555"; });
+        back.addEventListener("click", function(e) { e.preventDefault(); restoreSnapshot(); });
+        restart.addEventListener("click", function(e) { e.preventDefault(); doRestart(); });
+        nav.appendChild(back);
+        nav.appendChild(restart);
+        document.getElementById("scroll-container").insertBefore(nav, document.getElementById("text-buffer"));
+        updateNav();
     }
 });
 
